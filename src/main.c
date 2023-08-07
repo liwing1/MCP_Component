@@ -243,7 +243,7 @@ static void init_clkout(MCP356x_t* mcp_obj){
     // Configure PWM settings
     ledc_timer_config_t ledc_timer = {
         .duty_resolution = LEDC_TIMER_3_BIT,
-        .freq_hz = 8192000, /*1000000*/
+        .freq_hz = 4915200, /*1000000*/
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .timer_num = LEDC_TIMER_0
     };
@@ -269,14 +269,24 @@ void mcpStartup(MCP356x_t* mcp_obj)
     gpio_set_level(mcp_obj->gpio_num_cs, 1);
 
     // First enable interrupts
-    esp_rom_gpio_pad_select_gpio(mcp_obj->gpio_num_ndrdy);
-    gpio_set_direction(mcp_obj->gpio_num_ndrdy, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(mcp_obj->gpio_num_ndrdy, GPIO_PULLUP_ONLY);
-    gpio_set_intr_type(mcp_obj->gpio_num_ndrdy, GPIO_INTR_NEGEDGE);
-    // gpio_install_isr_service(0);
-    // gpio_isr_handler_add(mcp_obj->gpio_num_ndrdy, GPIO_DRDY_IRQHandler, (void*)mcp_obj);
+    gpio_config_t gpio_cfg = {
+        .pin_bit_mask = 1 << mcp_obj->gpio_num_ndrdy,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE
+    };
+    gpio_config(&gpio_cfg);
 
-    init_clkout(mcp_obj);
+    // esp_rom_gpio_pad_select_gpio(mcp_obj->gpio_num_ndrdy);
+    // gpio_set_direction(mcp_obj->gpio_num_ndrdy, GPIO_MODE_INPUT);
+    // gpio_set_pull_mode(mcp_obj->gpio_num_ndrdy, GPIO_PULLUP_ONLY);
+    // gpio_pullup_en(mcp_obj->gpio_num_ndrdy);
+    // gpio_set_intr_type(mcp_obj->gpio_num_ndrdy, GPIO_INTR_NEGEDGE);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(mcp_obj->gpio_num_ndrdy, GPIO_DRDY_IRQHandler, (void*)mcp_obj);
+
+    // init_clkout(mcp_obj);
 
     //GAINCAL --> (8,253,056 / 8,388,607 = 1.615894%) Gain Error w/2.048V Input
     writeSingleRegister(mcp_obj, ((_GAINCAL_ << 2) | _WRT_CTRL_), 0x7DEE80);     
@@ -308,7 +318,7 @@ void mcpStartup(MCP356x_t* mcp_obj)
     writeSingleRegister(mcp_obj, ((_CONFIG1_ << 2) | _WRT_CTRL_), 0x3C);
 
     //CONFIG0 --> CLK_SEL = extCLK, CS_SEL = No Bias, ADC_MODE = Standby Mode --> (0b11000010).
-    writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xC2);
+    writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE2);
 }
 
 
@@ -324,31 +334,37 @@ MCP356x_t MCP_instance = {
     .channel_data = 0
 };
 
+void adc_convert(void){
+    writeSingleRegister(&MCP_instance, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE3);
+    // while(!MCP_instance.flag_drdy);
+}
 
 void mcp_task(void* p)
 {
-    uint32_t data_read;
+    uint32_t data_read[32] = {0};
     while(1) 
     {
-        //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
-        writeSingleRegister(&MCP_instance, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xC3);
-
-        esp_rom_delay_us(10);
-        
-        if(MCP_instance.flag_drdy == 1)
+        for(uint8_t i = 0; i <= 31; i++)
         {
-            data_read = readSingleRegister(&MCP_instance, (_ADCDATA_ << 2) | _RD_CTRL_);
-
-            printf("%ld, %ld\r\n", esp_log_timestamp(), data_read);
+            //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
+            adc_convert();
             
-            MCP_instance.flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
+            // if(MCP_instance.flag_drdy == 1)
+            if(1)
+            {
+                data_read[i] = readSingleRegister(&MCP_instance, (_ADCDATA_ << 2) | _RD_CTRL_);
+
+                printf("%ld, %ld, %d\r\n", esp_log_timestamp(), data_read[i], i);
+                
+                MCP_instance.flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
-// #define __TESTE__
+#define __TESTE__
 
 void app_main() 
 {
@@ -359,8 +375,8 @@ void app_main()
     xTaskCreate(mcp_task, "mcp_task", 2048 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
 #else
     while(1){
-        uint32_t rx_value = readSingleRegister(&MCP_instance, ((_CONFIG0_ << 2) | _RD_CTRL_));
-        printf("read register-> %x: %lx\r\n", ((_CONFIG0_ << 2) | _RD_CTRL_), rx_value);
+        uint32_t rx_value = readSingleRegister(&MCP_instance, ((_IRQ_ << 2) | _RD_CTRL_));
+        printf("read register-> %x: %lx\r\n", ((_IRQ_ << 2) | _RD_CTRL_), rx_value);
         vTaskDelay(pdMS_TO_TICKS(2500));
     }
 #endif  // __TESTE__
