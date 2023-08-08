@@ -29,7 +29,7 @@
 #define _RD_CTRL_  0b01000001               //MCP3564 Read-CMD Command-Byte.
 
 // Custom macros
-#define SPI_CLOCK_SPEED 1000000 // 8.192 MHz
+#define SPI_CLOCK_SPEED 20000000 // 8.192 MHz
 
 #define nPOR_STATUS     BIT0
 #define nCRCCFG_STATUS  BIT1
@@ -224,7 +224,12 @@ static uint32_t readSingleRegister(MCP356x_t* mcp_obj, uint8_t RD_CMD)
         //Transmit Register-Data High-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete RX of Register-Data Upper-Byte.
         //Read SSP2BUF to clear buffer 
-        READ_VALUE = ((uint32_t)spiSendByte(0x00)) << 16;
+        READ_VALUE = ((uint32_t)spiSendByte(0x00)) << 24;
+
+        //Transmit Register-Data High-Byte as one 8-bit packet. 
+        //Wait for SPI Shift Register to complete RX of Register-Data Upper-Byte.
+        //Read SSP2BUF to clear buffer 
+        READ_VALUE |= ((uint32_t)spiSendByte(0x00)) << 16;
 
         //Transmit Register-Data High-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete RX of Register-Data High-Byte.
@@ -308,16 +313,16 @@ void mcpStartup(MCP356x_t* mcp_obj)
     //IRQ --> IRQ Mode = Low level active IRQ Output  --> (0b00000000).
     writeSingleRegister(mcp_obj, ((_IRQ_ << 2) | _WRT_CTRL_), 0x04);
 
-    //CONFIG3 --> Conv. Mod = One-Shot Conv. Mode, FORMAT = 24b,
+    //CONFIG3 --> Conv. Mod = One-Shot Conv. Mode, FORMAT = 32b + chid,
     //CRC_FORMAT = 16b, CRC-COM = Disabled,
-    //OFFSETCAL = Enabled, GAINCAL = Enabled --> (0b10000011).
-    writeSingleRegister(mcp_obj, ((_CONFIG3_ << 2) | _WRT_CTRL_), 0x83);
+    //OFFSETCAL = Enabled, GAINCAL = Enabled --> (0b10110011).
+    writeSingleRegister(mcp_obj, ((_CONFIG3_ << 2) | _WRT_CTRL_), 0xB3);
     
     //CONFIG2 --> BOOST = 1x, GAIN = 1x, AZ_MUX = 1 --> (0b10001111).
     writeSingleRegister(mcp_obj, ((_CONFIG2_ << 2) | _WRT_CTRL_), 0x8F);
 
-    //CONFIG1 --> AMCLK = MCLK, OSR = 98304 --> (0b00111100).      
-    writeSingleRegister(mcp_obj, ((_CONFIG1_ << 2) | _WRT_CTRL_), 0x3C);
+    //CONFIG1 --> AMCLK = MCLK, OSR = 256 --> (0b00001100).      
+    writeSingleRegister(mcp_obj, ((_CONFIG1_ << 2) | _WRT_CTRL_), 0x0C);
 
     //CONFIG0 --> CLK_SEL = extCLK, CS_SEL = No Bias, ADC_MODE = Standby Mode --> (0b11000010).
     writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE2);
@@ -346,7 +351,10 @@ void adc_convert(void){
 void mcp_task(void* p)
 {
     uint32_t data_read[8] = {0};
-    uint32_t timestamp[8] = {0};
+
+#ifdef __PRINT_LOG__
+    printf("timestamp,ch7,ch6,ch5,ch4,ch3,ch2,ch1,ch0\n");
+#endif
 
     while(1) 
     {
@@ -355,32 +363,23 @@ void mcp_task(void* p)
 
         for(uint8_t i = 8; i != 0; i--)
         {
-            while(!MCP_instance.flag_drdy) vTaskDelay(1); // To do: add timeout
+            while(!MCP_instance.flag_drdy) esp_rom_delay_us(100);//vTaskDelay(1); // To do: add timeout
             
             data_read[i-1] = readSingleRegister(&MCP_instance, (_ADCDATA_ << 2) | _RD_CTRL_);
-
-            timestamp[i-1] = esp_log_timestamp();
             
             MCP_instance.flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
-            
-            vTaskDelay(1);
         }
 
 #ifdef __PRINT_LOG__
-        printf("timestamp,hex,float,channel\n");
+        printf("%ld", esp_log_timestamp());
         for(uint8_t i = 8; i != 0; i--)
         {
-            printf("%05ld,%08lx,%.4lf,%d\r\n", 
-             timestamp[i-1],
-             data_read[i],
-             (double)(data_read[i-1]*3.3/(1<<23)),
-             i-1
-            );
+            printf(",%08lx", data_read[i-1]);
         }
         printf("\n");
 #endif  //__PRINT_LOG__
 
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
