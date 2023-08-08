@@ -30,16 +30,20 @@
 
 // Custom macros
 #define SPI_CLOCK_SPEED 1000000 // 8.192 MHz
-#define BUFFER_SIZE 1
 
-static uint8_t tx_data[BUFFER_SIZE] = {0x00}; // Data to be transmitted
-static uint8_t rx_data[BUFFER_SIZE] = {0x00}; // Buffer to store received data
+#define nPOR_STATUS     BIT0
+#define nCRCCFG_STATUS  BIT1
+
+// Global variables
+static uint8_t tx_data = 0; // Data to be transmitted
+static uint8_t rx_data = 0; // Buffer to store received data
+static uint8_t g_status = 0;
 
 static spi_device_handle_t spi;
 static spi_transaction_t trans = {
-    .length = 8 * BUFFER_SIZE,
-    .tx_buffer = tx_data,
-    .rx_buffer = rx_data
+    .length = 8,
+    .tx_buffer = &tx_data,
+    .rx_buffer = &rx_data
 };
 
 typedef struct{
@@ -56,7 +60,7 @@ typedef struct{
     uint32_t flag_drdy;
 
     // Data access
-    uint32_t channel_data;
+    uint32_t channel_data[7];
 } MCP356x_t;
 
 
@@ -76,7 +80,7 @@ static void init_spi(MCP356x_t* mcp_obj)
         .sclk_io_num = mcp_obj->gpio_num_clk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = BUFFER_SIZE
+        .max_transfer_sz = 1
     };
 
     spi_device_interface_config_t dev_config = {
@@ -101,10 +105,10 @@ static void init_spi(MCP356x_t* mcp_obj)
 
 static uint8_t spiSendByte(uint8_t byte)
 {
-    tx_data[0] = byte;
+    tx_data = byte;
     spi_device_transmit(spi, &trans);
     // printf("sendByte: %x\n", byte);   //Debug
-    return rx_data[0];
+    return rx_data;
 }
 
 static void writeSingleRegister(MCP356x_t* mcp_obj, uint8_t WRT_CMD, uint32_t WRT_DATA)
@@ -113,7 +117,6 @@ static void writeSingleRegister(MCP356x_t* mcp_obj, uint8_t WRT_CMD, uint32_t WR
     uint8_t WRT_DATA_HIGH;                                 //Register-Data High-Byte.
     uint8_t WRT_DATA_UPPER;                                //Register-Data Upper-Byte.
     uint8_t REG_ADDR;
-    uint8_t STATUS;
 
     WRT_DATA_LOW = (uint8_t) (WRT_DATA & 0x0000FF);              //Extract Low-Byte from 24-bit Write-Data.
     WRT_DATA_HIGH = (uint8_t) ((WRT_DATA & 0x00FF00) >> 8);      //Extract High-Byte from 24-bit Write-Data.
@@ -128,7 +131,7 @@ static void writeSingleRegister(MCP356x_t* mcp_obj, uint8_t WRT_CMD, uint32_t WR
         //Transmit Write-CMD as one 8-bit packet.
         //Wait for SPI Shift Register to complete TX of Write-CMD.
         //Read SSP2BUF to retrieve MCP3564 STATUS-Byte.
-        STATUS = spiSendByte(WRT_CMD);
+        g_status = spiSendByte(WRT_CMD);
 
         //Transmit Register-Data Low-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete TX of Register-Data Low-Byte.
@@ -144,7 +147,7 @@ static void writeSingleRegister(MCP356x_t* mcp_obj, uint8_t WRT_CMD, uint32_t WR
         //Transmit Write-CMD as one 8-bit packet.
         //Wait for SPI Shift Register to complete TX of Write-CMD.
         //Read SSP2BUF to retrieve MCP3564 STATUS-Byte.
-        STATUS = spiSendByte(WRT_CMD);
+        g_status = spiSendByte(WRT_CMD);
 
         //Transmit Register-Data Low-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete TX of Register-Data Low-Byte.
@@ -169,7 +172,6 @@ static uint32_t readSingleRegister(MCP356x_t* mcp_obj, uint8_t RD_CMD)
 {
     uint32_t READ_VALUE = 0;
     uint8_t REG_ADDR;
-    uint8_t STATUS;
 
     REG_ADDR = (RD_CMD & 0b00111100) >> 2;                  //Extract MCP3564 Register-Address for Write-CMD
 
@@ -180,7 +182,7 @@ static uint32_t readSingleRegister(MCP356x_t* mcp_obj, uint8_t RD_CMD)
         //Transmit Read-CMD as one 8-bit packet.
         //Wait for SPI Shift Register to complete TX of Read-CMD.
         //Read SSP2BUF to retrieve MCP3564 STATUS-Byte.
-        STATUS = spiSendByte(RD_CMD);
+        g_status = spiSendByte(RD_CMD);
 
         //Transmit Register-Data Low-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete RX of Register-Data Low-Byte.
@@ -196,7 +198,7 @@ static uint32_t readSingleRegister(MCP356x_t* mcp_obj, uint8_t RD_CMD)
         //Transmit Read-CMD as one 8-bit packet.
         //Wait for SPI Shift Register to complete TX of Read-CMD.
         //Read SSP2BUF to retrieve MCP3564 STATUS-Byte.
-        STATUS = spiSendByte(RD_CMD);
+        g_status = spiSendByte(RD_CMD);
 
         //Transmit Register-Data High-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete RX of Register-Data High-Byte.
@@ -217,7 +219,7 @@ static uint32_t readSingleRegister(MCP356x_t* mcp_obj, uint8_t RD_CMD)
         //Transmit Read-CMD as one 8-bit packet.
         //Wait for SPI Shift Register to complete TX of Read-CMD.
         //Read SSP2BUF to retrieve MCP3564 STATUS-Byte.
-        STATUS = spiSendByte(RD_CMD);
+        g_status = spiSendByte(RD_CMD);
 
         //Transmit Register-Data High-Byte as one 8-bit packet. 
         //Wait for SPI Shift Register to complete RX of Register-Data Upper-Byte.
@@ -239,27 +241,27 @@ static uint32_t readSingleRegister(MCP356x_t* mcp_obj, uint8_t RD_CMD)
     return READ_VALUE;
 }
 
-static void init_clkout(MCP356x_t* mcp_obj){
-    // Configure PWM settings
-    ledc_timer_config_t ledc_timer = {
-        .duty_resolution = LEDC_TIMER_3_BIT,
-        .freq_hz = 4915200, /*1000000*/
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .timer_num = LEDC_TIMER_0
-    };
+// static void init_clkout(MCP356x_t* mcp_obj){
+//     // Configure PWM settings
+//     ledc_timer_config_t ledc_timer = {
+//         .duty_resolution = LEDC_TIMER_3_BIT,
+//         .freq_hz = 4915200, /*1000000*/
+//         .speed_mode = LEDC_LOW_SPEED_MODE,
+//         .timer_num = LEDC_TIMER_0
+//     };
 
-    ledc_channel_config_t ledc_channel = {
-        .channel = LEDC_CHANNEL_0,
-        .duty = 4,
-        .gpio_num = mcp_obj->gpio_num_pwm,
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .hpoint = 0,
-        .timer_sel = LEDC_TIMER_0
-    };
+//     ledc_channel_config_t ledc_channel = {
+//         .channel = LEDC_CHANNEL_0,
+//         .duty = 4,
+//         .gpio_num = mcp_obj->gpio_num_pwm,
+//         .speed_mode = LEDC_LOW_SPEED_MODE,
+//         .hpoint = 0,
+//         .timer_sel = LEDC_TIMER_0
+//     };
     
-    ledc_timer_config(&ledc_timer);
-    ledc_channel_config(&ledc_channel);
-}
+//     ledc_timer_config(&ledc_timer);
+//     ledc_channel_config(&ledc_channel);
+// }
 
 void mcpStartup(MCP356x_t* mcp_obj) 
 {
@@ -301,7 +303,7 @@ void mcpStartup(MCP356x_t* mcp_obj)
     writeSingleRegister(mcp_obj, ((_SCAN_ << 2) | _WRT_CTRL_), 0x000000);
 
     //MUX --> VIN+ = CH0, VIN- = CH1 --> (0b00000001).
-    writeSingleRegister(mcp_obj, ((_MUX_ << 2) | _WRT_CTRL_), 0x01);
+    writeSingleRegister(mcp_obj, ((_MUX_ << 2) | _WRT_CTRL_), 0xBC);
 
     //IRQ --> IRQ Mode = Low level active IRQ Output  --> (0b00000000).
     writeSingleRegister(mcp_obj, ((_IRQ_ << 2) | _WRT_CTRL_), 0x04);
@@ -331,12 +333,12 @@ MCP356x_t MCP_instance = {
     .gpio_num_nsync = GPIO_NUM_16,
     .gpio_num_ndrdy = GPIO_NUM_1,
     .flag_drdy = 0,
-    .channel_data = 0
+    .channel_data = {0}
 };
 
 void adc_convert(void){
     writeSingleRegister(&MCP_instance, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE3);
-    // while(!MCP_instance.flag_drdy);
+    while(!MCP_instance.flag_drdy); // To do: add timeout
 }
 
 void mcp_task(void* p)
@@ -349,15 +351,15 @@ void mcp_task(void* p)
             //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
             adc_convert();
             
-            // if(MCP_instance.flag_drdy == 1)
-            if(1)
+            if(MCP_instance.flag_drdy == 1)
             {
                 data_read[i] = readSingleRegister(&MCP_instance, (_ADCDATA_ << 2) | _RD_CTRL_);
 
-                printf("%ld, %ld, %d\r\n", esp_log_timestamp(), data_read[i], i);
+                printf("%ld, %lf, %d\r\n", esp_log_timestamp(), (double)(data_read[i]*3.3/(1<<23)), i);
                 
                 MCP_instance.flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
             }
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
 
         vTaskDelay(pdMS_TO_TICKS(5000));
