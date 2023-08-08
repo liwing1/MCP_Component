@@ -300,7 +300,7 @@ void mcpStartup(MCP356x_t* mcp_obj)
     writeSingleRegister(mcp_obj, ((_TIMER_ << 2) | _WRT_CTRL_), 0x000000);
 
     //SCAN --> Disabled.
-    writeSingleRegister(mcp_obj, ((_SCAN_ << 2) | _WRT_CTRL_), 0x000000);
+    writeSingleRegister(mcp_obj, ((_SCAN_ << 2) | _WRT_CTRL_), 0x0000FF);
 
     //MUX --> VIN+ = CH0, VIN- = CH1 --> (0b00000001).
     writeSingleRegister(mcp_obj, ((_MUX_ << 2) | _WRT_CTRL_), 0xBC);
@@ -338,29 +338,47 @@ MCP356x_t MCP_instance = {
 
 void adc_convert(void){
     writeSingleRegister(&MCP_instance, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE3);
-    while(!MCP_instance.flag_drdy); // To do: add timeout
+    // while(!MCP_instance.flag_drdy); // To do: add timeout
 }
+
+#define __PRINT_LOG__
 
 void mcp_task(void* p)
 {
-    uint32_t data_read[32] = {0};
+    uint32_t data_read[8] = {0};
+    uint32_t timestamp[8] = {0};
+
     while(1) 
     {
-        for(uint8_t i = 0; i <= 31; i++)
-        {
-            //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
-            adc_convert();
-            
-            if(MCP_instance.flag_drdy == 1)
-            {
-                data_read[i] = readSingleRegister(&MCP_instance, (_ADCDATA_ << 2) | _RD_CTRL_);
+        //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
+        adc_convert();
 
-                printf("%ld, %lf, %d\r\n", esp_log_timestamp(), (double)(data_read[i]*3.3/(1<<23)), i);
-                
-                MCP_instance.flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
-            }
-            vTaskDelay(pdMS_TO_TICKS(10));
+        for(uint8_t i = 8; i != 0; i--)
+        {
+            while(!MCP_instance.flag_drdy) vTaskDelay(1); // To do: add timeout
+            
+            data_read[i-1] = readSingleRegister(&MCP_instance, (_ADCDATA_ << 2) | _RD_CTRL_);
+
+            timestamp[i-1] = esp_log_timestamp();
+            
+            MCP_instance.flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
+            
+            vTaskDelay(1);
         }
+
+#ifdef __PRINT_LOG__
+        printf("timestamp,hex,float,channel\n");
+        for(uint8_t i = 8; i != 0; i--)
+        {
+            printf("%05ld,%08lx,%.4lf,%d\r\n", 
+             timestamp[i-1],
+             data_read[i],
+             (double)(data_read[i-1]*3.3/(1<<23)),
+             i-1
+            );
+        }
+        printf("\n");
+#endif  //__PRINT_LOG__
 
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
