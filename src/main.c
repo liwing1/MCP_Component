@@ -285,11 +285,6 @@ void mcpStartup(MCP356x_t* mcp_obj)
     };
     gpio_config(&gpio_cfg);
 
-    // esp_rom_gpio_pad_select_gpio(mcp_obj->gpio_num_ndrdy);
-    // gpio_set_direction(mcp_obj->gpio_num_ndrdy, GPIO_MODE_INPUT);
-    // gpio_set_pull_mode(mcp_obj->gpio_num_ndrdy, GPIO_PULLUP_ONLY);
-    // gpio_pullup_en(mcp_obj->gpio_num_ndrdy);
-    // gpio_set_intr_type(mcp_obj->gpio_num_ndrdy, GPIO_INTR_NEGEDGE);
     gpio_install_isr_service(0);
     gpio_isr_handler_add(mcp_obj->gpio_num_ndrdy, GPIO_DRDY_IRQHandler, (void*)mcp_obj);
 
@@ -318,8 +313,8 @@ void mcpStartup(MCP356x_t* mcp_obj)
     //OFFSETCAL = Enabled, GAINCAL = Enabled --> (0b10110011).
     writeSingleRegister(mcp_obj, ((_CONFIG3_ << 2) | _WRT_CTRL_), 0xB3);
     
-    //CONFIG2 --> BOOST = 1x, GAIN = 1x, AZ_MUX = 1 --> (0b10001111).
-    writeSingleRegister(mcp_obj, ((_CONFIG2_ << 2) | _WRT_CTRL_), 0x8F);
+    //CONFIG2 --> BOOST = 1x, GAIN = 1x, AZ_MUX = 0 --> (0b10001011).
+    writeSingleRegister(mcp_obj, ((_CONFIG2_ << 2) | _WRT_CTRL_), 0x8B);
 
     //CONFIG1 --> AMCLK = MCLK, OSR = 256 --> (0b00001100).      
     writeSingleRegister(mcp_obj, ((_CONFIG1_ << 2) | _WRT_CTRL_), 0x0C);
@@ -328,6 +323,14 @@ void mcpStartup(MCP356x_t* mcp_obj)
     writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE2);
 }
 
+int32_t signExtend(uint32_t Bytes)
+{
+    int32_t signByte    = ((int32_t) (Bytes & 0x0F000000));
+    int32_t dataBytes   = ((int32_t) (Bytes & 0x00FFFFFF));
+
+    int32_t result = ((int32_t)(signByte<<4) | signByte | dataBytes);
+    return result;
+}
 
 MCP356x_t MCP_instance = {
     .gpio_num_miso = GPIO_NUM_13,
@@ -374,7 +377,7 @@ void mcp_task(void* p)
         printf("%ld", esp_log_timestamp());
         for(uint8_t i = 8; i != 0; i--)
         {
-            printf(",%08lx", data_read[i-1]);
+            printf(",%08ld", signExtend(data_read[i-1]));
         }
         printf("\n");
 #endif  //__PRINT_LOG__
