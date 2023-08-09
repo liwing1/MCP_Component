@@ -31,6 +31,8 @@
 // Custom macros
 #define SPI_CLOCK_SPEED 20000000 // 20 MHz
 #define SAMPLING_FREQ   100 // Hz
+#define SAMPLING_PERIOD_MS (1000/SAMPLING_FREQ)
+#define NUM_CHANNELS    8 // ch7 to ch0
 
 #define nPOR_STATUS     BIT0
 #define nCRCCFG_STATUS  BIT1
@@ -52,6 +54,8 @@ static spi_transaction_t trans = {
     .tx_buffer = &tx_data,
     .rx_buffer = &rx_data
 };
+
+static TaskHandle_t mcp_task_handler;
 
 static void IRAM_ATTR GPIO_DRDY_IRQHandler(void* arg)
 {
@@ -287,7 +291,38 @@ void mcpStartup(MCP356x_t* mcp_obj)
     writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE2);
 }
 
-int32_t signExtend(uint32_t Bytes)
+static inline uint32_t** mallocMeasureArray(uint16_t num_rows, uint8_t num_columns)
+{
+    uint32_t** array = (uint32_t**)calloc(1, num_rows * sizeof(uint32_t));
+
+    if(array == NULL)
+    {
+        return NULL;
+    } 
+
+    for(uint16_t i = 0; i < num_rows; i++)
+    {
+        array[i] = (uint32_t*)calloc(1, num_columns * sizeof(uint32_t));
+
+        if(array[i] == NULL)
+        {
+            return NULL;
+        }
+    }
+
+    return array;
+}
+
+static inline void freeMeasureArray(uint32_t** measures, uint16_t num_rows)
+{
+    for(uint16_t i = 0; i < num_rows; i++)
+    {
+        free(measures[i]);
+    }
+    free(measures);
+}
+
+static int32_t signExtend(uint32_t Bytes)
 {
     int32_t signByte    = ((int32_t) (Bytes & 0x0F000000));
     int32_t dataBytes   = ((int32_t) (Bytes & 0x00FFFFFF));
@@ -295,63 +330,83 @@ int32_t signExtend(uint32_t Bytes)
     return ((signByte<<4) | signByte | dataBytes);
 }
 
-TaskHandle_t mcp_task_handler;
-uint32_t measures[3000][9];
-
-void mcp_task(void* p)
+static inline void printMeasures(uint32_t** measures, uint16_t num_rows, uint8_t num_columns)
 {
-    MCP356x_t* mcp_obj = (MCP356x_t*)p;
-
-    uint16_t row = 0;
-
-    uint32_t timeout = esp_log_timestamp() + 30000;
-
-    printf("Start conversion \r\n");
-    while(esp_log_timestamp() < timeout) 
-    {
-        measures[row][8] = row*10;
-
-        //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
-        writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE3);
-
-        //Read conversion. Store CH7 in column 0, CH6 in column 1...
-        for(uint8_t column = 0; column < 8; column++)
-        {
-            while(!mcp_obj->flag_drdy) esp_rom_delay_us(100);//vTaskDelay(1); // To do: add timeout
-            
-            measures[row][column] = readSingleRegister(mcp_obj, (_ADCDATA_ << 2) | _RD_CTRL_);
-            
-            mcp_obj->flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
-        }
-
-        row++;
-
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
     printf("timestamp,ch7,ch6,ch5,ch4,ch3,ch2,ch1,ch0\n");
-    for(uint16_t row = 0; row < 3000; row++)
+    for(uint16_t row = 0; row < num_rows; row++)
     {
-        printf("%ld", measures[row][8]);
-        for(uint8_t column = 0; column < 8; column++)
+        printf("%ld", measures[row][NUM_CHANNELS]);
+        for(uint8_t column = 0; column < NUM_CHANNELS; column++)
         {
             printf(",%08ld", signExtend(measures[row][column]));
         }
         printf("\n");
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
+
+void mcp_task(void* p)
+{
+    MCP356x_t* mcp_obj = (MCP356x_t*)((adc_request_t*)p)->device;
+    uint16_t num_rows = ((adc_request_t*)p)->window_size_sec * SAMPLING_FREQ;
+    uint8_t num_columns = NUM_CHANNELS + 1; //timevector + channels
+
+    /* INITIALIZE MEMORY SPACE */
+    uint32_t** measures = mallocMeasureArray(num_rows, num_columns);
+    if(measures == NULL){
+        ESP_LOGE("MCP", "memory allocation failed");
+        while(1);
+    }
+
+    /* SAMPLE CHANNELS */
+    printf("Start conversion \r\n");
+
+    for(uint16_t row = 0; row < num_rows; row++)
+    {
+        measures[row][NUM_CHANNELS] = row*SAMPLING_PERIOD_MS;   // Timevector
+
+        //Conversion-Start via Write-CMD to CONFIG0[1:0] ADC_MODE[1:0]] = 11
+        writeSingleRegister(mcp_obj, ((_CONFIG0_ << 2) | _WRT_CTRL_), 0xE3);
+
+        //Read conversion. Store CH7 in column 0, CH6 in column 1...
+        for(uint8_t column = 0; column < NUM_CHANNELS; column++)
+        {
+            while(!mcp_obj->flag_drdy) esp_rom_delay_us(50);//vTaskDelay(1); // To do: add timeout
+            
+            measures[row][column] = readSingleRegister(mcp_obj, (_ADCDATA_ << 2) | _RD_CTRL_);
+            
+            mcp_obj->flag_drdy = 0;             //Data-Ready Flag via MCP3564 IRQ Alert.
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(SAMPLING_PERIOD_MS));
+    }
+
+    /* OUTPUT DATA */
+    printMeasures(measures, num_rows, num_columns);
+
+    /* CLEAR ALLOCATED MEMORY */
+    freeMeasureArray(measures, num_rows);
 
     vTaskDelete(mcp_task_handler);
 }
 
 esp_err_t MCP3564_startConversion(MCP356x_t* mcp_obj, size_t duration_seconds)
 {
-    adc_request_t adc_request= {
-        .device = mcp_obj,
-        .window_size_sec = duration_seconds
-    };
+    BaseType_t status = 0;
+    static adc_request_t adc_request = {0};
 
-    BaseType_t status = xTaskCreate(
+    adc_request.device = mcp_obj;
+    adc_request.window_size_sec = duration_seconds;
+
+    eTaskState taskState = eTaskGetState(mcp_task_handler);
+
+    if(taskState == eRunning)
+    {
+        ESP_LOGE("MCP", "STILL EXECUTING");
+        return ESP_FAIL;
+    }
+
+    status = xTaskCreate(
         mcp_task,
         "mcp_task", 
         2048 * 8, 
@@ -360,43 +415,38 @@ esp_err_t MCP3564_startConversion(MCP356x_t* mcp_obj, size_t duration_seconds)
         &mcp_task_handler
     );
 
-    if(errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY == status){
+    if(errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY == status)
+    {
         return ESP_FAIL;
     }
 
     return ESP_OK;
 }
 
+MCP356x_t MCP_instance = {
+    .gpio_num_miso = GPIO_NUM_13,
+    .gpio_num_mosi = GPIO_NUM_11,
+    .gpio_num_clk = GPIO_NUM_12,
+    .gpio_num_cs = GPIO_NUM_10,
+    .gpio_num_pwm = GPIO_NUM_18,
+    .gpio_num_nsync = GPIO_NUM_16,
+    .gpio_num_ndrdy = GPIO_NUM_1,
+    .flag_drdy = 0,
+};
+
 void app_main() 
 {
-    MCP356x_t MCP_instance = {
-        .gpio_num_miso = GPIO_NUM_13,
-        .gpio_num_mosi = GPIO_NUM_11,
-        .gpio_num_clk = GPIO_NUM_12,
-        .gpio_num_cs = GPIO_NUM_10,
-        .gpio_num_pwm = GPIO_NUM_18,
-        .gpio_num_nsync = GPIO_NUM_16,
-        .gpio_num_ndrdy = GPIO_NUM_1,
-        .flag_drdy = 0,
-    };
-
     init_spi(&MCP_instance);
     mcpStartup(&MCP_instance);
 
-    // ESP_ERROR_CHECK(MCP3564_startConversion(&MCP_instance, 30));
-
-    xTaskCreate(
-        mcp_task,
-        "mcp_task", 
-        2048 * 8, 
-        &MCP_instance, 
-        configMAX_PRIORITIES - 1, 
-        &mcp_task_handler
-    );
-
-    while(1){
-        printf("Time elapsed: %ld\r\n", esp_log_timestamp());
-        vTaskDelay(5000);       
-    }
-
+    ESP_ERROR_CHECK(MCP3564_startConversion(&MCP_instance, 30));
+    vTaskDelay(pdMS_TO_TICKS(31000));
+    vTaskDelay(pdMS_TO_TICKS(31000));
+    ESP_ERROR_CHECK(MCP3564_startConversion(&MCP_instance, 20));
+    vTaskDelay(pdMS_TO_TICKS(21000));
+    vTaskDelay(pdMS_TO_TICKS(21000));
+    ESP_ERROR_CHECK(MCP3564_startConversion(&MCP_instance, 10));
+    vTaskDelay(pdMS_TO_TICKS(11000));
+    vTaskDelay(pdMS_TO_TICKS(11000));
+    ESP_ERROR_CHECK(MCP3564_startConversion(&MCP_instance, 5));
 }
