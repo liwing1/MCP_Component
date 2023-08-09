@@ -17,4 +17,7 @@ typedef struct{
     uint32_t flag_drdy;
 } MCP356x_t;
 
+esp_err_t MCP3564_startConversion(MCP356x_t* mcp_obj, size_t duration_seconds);
+void mcpStartup(MCP356x_t* mcp_obj);
+
 #endif
